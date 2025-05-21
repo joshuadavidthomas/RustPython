@@ -16,6 +16,12 @@ mod csv;
 mod dis;
 mod gc;
 
+mod bz2;
+mod compression; // internal module
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+mod lzma;
+mod zlib;
+
 mod blake2;
 mod hashlib;
 mod md5;
@@ -37,13 +43,11 @@ mod statistics;
 mod suggestions;
 // TODO: maybe make this an extension module, if we ever get those
 // mod re;
-mod bz2;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod socket;
 #[cfg(all(unix, not(target_os = "redox")))]
 mod syslog;
 mod unicodedata;
-mod zlib;
 
 mod faulthandler;
 #[cfg(any(unix, target_os = "wasi"))]
@@ -150,6 +154,10 @@ pub fn get_module_inits() -> impl Iterator<Item = (Cow<'static, str>, StdlibInit
         {
             "_multiprocessing" => multiprocessing::make_module,
             "_socket" => socket::make_module,
+        }
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        {
+            "_lzma" => lzma::make_module,
         }
         #[cfg(all(feature = "sqlite", not(any(target_os = "android", target_arch = "wasm32"))))]
         {

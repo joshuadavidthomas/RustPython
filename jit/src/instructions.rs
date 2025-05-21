@@ -600,6 +600,18 @@ impl<'a, 'b> FunctionCompiler<'a, 'b> {
                     _ => Err(JitCompileError::BadBytecode),
                 }
             }
+            Instruction::Nop => Ok(()),
+            Instruction::Swap { index } => {
+                let len = self.stack.len();
+                let i = len - 1;
+                let j = len - 1 - index.get(arg) as usize;
+                self.stack.swap(i, j);
+                Ok(())
+            }
+            Instruction::Pop => {
+                self.stack.pop();
+                Ok(())
+            }
             _ => Err(JitCompileError::NotSupported),
         }
     }
@@ -1153,8 +1165,7 @@ impl<'a, 'b> FunctionCompiler<'a, 'b> {
 
         // ----- Merge: Return the final result.
         self.builder.switch_to_block(merge_block);
-        let final_val = self.builder.block_params(merge_block)[0];
-        final_val
+        self.builder.block_params(merge_block)[0]
     }
 
     fn compile_ipow(&mut self, a: Value, b: Value) -> Value {

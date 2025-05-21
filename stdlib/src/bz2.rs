@@ -4,16 +4,16 @@ pub(crate) use _bz2::make_module;
 
 #[pymodule]
 mod _bz2 {
-    use crate::common::lock::PyMutex;
+    use crate::compression::{
+        DecompressArgs, DecompressError, DecompressState, DecompressStatus, Decompressor,
+    };
     use crate::vm::{
         VirtualMachine,
         builtins::{PyBytesRef, PyTypeRef},
+        common::lock::PyMutex,
         function::{ArgBytesLike, OptionalArg},
         object::{PyPayload, PyResult},
         types::Constructor,
-    };
-    use crate::zlib::{
-        DecompressArgs, DecompressError, DecompressState, DecompressStatus, Decompressor,
     };
     use bzip2::{Decompress, Status, write::BzEncoder};
     use rustpython_vm::convert::ToPyException;
