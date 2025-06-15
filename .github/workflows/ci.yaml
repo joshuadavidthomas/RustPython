@@ -32,11 +32,6 @@ env:
     test_pathlib
     test_posixpath
     test_venv
-  # configparser: https://github.com/RustPython/RustPython/issues/4995#issuecomment-1582397417
-  # socketserver: seems related to configparser crash.
-  MACOS_SKIPS: >-
-    test_configparser
-    test_socketserver
   # PLATFORM_INDEPENDENT_TESTS are tests that do not depend on the underlying OS. They are currently
   # only run on Linux to speed up the CI.
   PLATFORM_INDEPENDENT_TESTS: >-
@@ -284,7 +279,7 @@ jobs:
         run: target/release/rustpython -m test -j 1 -u all --slowest --fail-env-changed -v -x ${{ env.PLATFORM_INDEPENDENT_TESTS }}
       - if: runner.os == 'macOS'
         name: run cpython platform-dependent tests (MacOS)
-        run: target/release/rustpython -m test -j 1 --slowest --fail-env-changed -v -x ${{ env.PLATFORM_INDEPENDENT_TESTS }} ${{ env.MACOS_SKIPS }}
+        run: target/release/rustpython -m test -j 1 --slowest --fail-env-changed -v -x ${{ env.PLATFORM_INDEPENDENT_TESTS }}
       - if: runner.os == 'Windows'
         name: run cpython platform-dependent tests (windows partial - fixme)
         run:
@@ -324,11 +319,13 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: install ruff
-        run: python -m pip install ruff==0.0.291 # astral-sh/ruff#7778
+        run: python -m pip install ruff==0.11.8
       - name: Ensure docs generate no warnings
         run: cargo doc
-      - name: run python lint
-        run: ruff extra_tests wasm examples  --exclude='./.*',./Lib,./vm/Lib,./benches/ --select=E9,F63,F7,F82 --show-source
+      - name: run ruff check
+        run: ruff check --diff
+      - name: run ruff format
+        run: ruff format --check
       - name: install prettier
         run: yarn global add prettier && echo "$(yarn global bin)" >>$GITHUB_PATH
       - name: check wasm code with prettier
@@ -338,7 +335,7 @@ jobs:
       - name: install extra dictionaries
         run: npm install @cspell/dict-en_us @cspell/dict-cpp @cspell/dict-python @cspell/dict-rust @cspell/dict-win32 @cspell/dict-shell
       - name: spell checker
-        uses: streetsidesoftware/cspell-action@v6
+        uses: streetsidesoftware/cspell-action@v7
         with:
           files: '**/*.rs'
           incremental_files_only: true
