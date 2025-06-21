@@ -206,7 +206,7 @@ impl VirtualMachine {
                 lineno
             )?;
         } else if let Some(filename) = maybe_filename {
-            filename_suffix = format!(" ({})", filename);
+            filename_suffix = format!(" ({filename})");
         }
 
         if let Some(text) = maybe_text {
@@ -215,7 +215,7 @@ impl VirtualMachine {
             let l_text = r_text.trim_start_matches([' ', '\n', '\x0c']); // \x0c is \f
             let spaces = (r_text.len() - l_text.len()) as isize;
 
-            writeln!(output, "    {}", l_text)?;
+            writeln!(output, "    {l_text}")?;
 
             let maybe_offset: Option<isize> =
                 getattr("offset").and_then(|obj| obj.try_to_value::<isize>(vm).ok());
@@ -237,9 +237,10 @@ impl VirtualMachine {
                 let colno = offset - 1 - spaces;
                 let end_colno = end_offset - 1 - spaces;
                 if colno >= 0 {
-                    let caret_space = l_text.chars().collect::<Vec<_>>()[..colno as usize]
-                        .iter()
-                        .map(|c| if c.is_whitespace() { *c } else { ' ' })
+                    let caret_space = l_text
+                        .chars()
+                        .take(colno as usize)
+                        .map(|c| if c.is_whitespace() { c } else { ' ' })
                         .collect::<String>();
 
                     let mut error_width = end_colno - colno;
@@ -495,6 +496,7 @@ pub struct ExceptionZoo {
     pub not_implemented_error: &'static Py<PyType>,
     pub recursion_error: &'static Py<PyType>,
     pub syntax_error: &'static Py<PyType>,
+    pub incomplete_input_error: &'static Py<PyType>,
     pub indentation_error: &'static Py<PyType>,
     pub tab_error: &'static Py<PyType>,
     pub system_error: &'static Py<PyType>,
@@ -743,6 +745,7 @@ impl ExceptionZoo {
         let recursion_error = PyRecursionError::init_builtin_type();
 
         let syntax_error = PySyntaxError::init_builtin_type();
+        let incomplete_input_error = PyIncompleteInputError::init_builtin_type();
         let indentation_error = PyIndentationError::init_builtin_type();
         let tab_error = PyTabError::init_builtin_type();
 
@@ -817,6 +820,7 @@ impl ExceptionZoo {
             not_implemented_error,
             recursion_error,
             syntax_error,
+            incomplete_input_error,
             indentation_error,
             tab_error,
             system_error,
@@ -965,6 +969,7 @@ impl ExceptionZoo {
             "end_offset" => ctx.none(),
             "text" => ctx.none(),
         });
+        extend_exception!(PyIncompleteInputError, ctx, excs.incomplete_input_error);
         extend_exception!(PyIndentationError, ctx, excs.indentation_error);
         extend_exception!(PyTabError, ctx, excs.tab_error);
 
@@ -1256,9 +1261,32 @@ pub(super) mod types {
     #[derive(Debug)]
     pub struct PyAssertionError {}
 
-    #[pyexception(name, base = "PyException", ctx = "attribute_error", impl)]
+    #[pyexception(name, base = "PyException", ctx = "attribute_error")]
     #[derive(Debug)]
     pub struct PyAttributeError {}
+
+    #[pyexception]
+    impl PyAttributeError {
+        #[pyslot]
+        #[pymethod(name = "__init__")]
+        pub(crate) fn slot_init(
+            zelf: PyObjectRef,
+            args: ::rustpython_vm::function::FuncArgs,
+            vm: &::rustpython_vm::VirtualMachine,
+        ) -> ::rustpython_vm::PyResult<()> {
+            zelf.set_attr(
+                "name",
+                vm.unwrap_or_none(args.kwargs.get("name").cloned()),
+                vm,
+            )?;
+            zelf.set_attr(
+                "obj",
+                vm.unwrap_or_none(args.kwargs.get("obj").cloned()),
+                vm,
+            )?;
+            Ok(())
+        }
+    }
 
     #[pyexception(name, base = "PyException", ctx = "buffer_error", impl)]
     #[derive(Debug)]
@@ -1281,17 +1309,21 @@ pub(super) mod types {
             args: ::rustpython_vm::function::FuncArgs,
             vm: &::rustpython_vm::VirtualMachine,
         ) -> ::rustpython_vm::PyResult<()> {
-            zelf.set_attr(
-                "name",
-                vm.unwrap_or_none(args.kwargs.get("name").cloned()),
-                vm,
-            )?;
-            zelf.set_attr(
-                "path",
-                vm.unwrap_or_none(args.kwargs.get("path").cloned()),
-                vm,
-            )?;
-            Ok(())
+            let mut kwargs = args.kwargs.clone();
+            let name = kwargs.swap_remove("name");
+            let path = kwargs.swap_remove("path");
+
+            // Check for any remaining invalid keyword arguments
+            if let Some(invalid_key) = kwargs.keys().next() {
+                return Err(vm.new_type_error(format!(
+                    "'{}' is an invalid keyword argument for ImportError",
+                    invalid_key
+                )));
+            }
+
+            zelf.set_attr("name", vm.unwrap_or_none(name), vm)?;
+            zelf.set_attr("path", vm.unwrap_or_none(path), vm)?;
+            PyBaseException::slot_init(zelf, args, vm)
         }
         #[pymethod(magic)]
         fn reduce(exc: PyBaseExceptionRef, vm: &VirtualMachine) -> PyTupleRef {
@@ -1575,6 +1607,43 @@ pub(super) mod types {
 
     #[pyexception]
     impl PySyntaxError {
+        #[pyslot]
+        #[pymethod(name = "__init__")]
+        fn slot_init(zelf: PyObjectRef, args: FuncArgs, vm: &VirtualMachine) -> PyResult<()> {
+            let len = args.args.len();
+            let new_args = args;
+
+            zelf.set_attr("print_file_and_line", vm.ctx.none(), vm)?;
+
+            if len == 2 {
+                if let Ok(location_tuple) = new_args.args[1]
+                    .clone()
+                    .downcast::<crate::builtins::PyTuple>()
+                {
+                    let location_tup_len = location_tuple.len();
+                    for (i, &attr) in [
+                        "filename",
+                        "lineno",
+                        "offset",
+                        "text",
+                        "end_lineno",
+                        "end_offset",
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        if location_tup_len > i {
+                            zelf.set_attr(attr, location_tuple.fast_getitem(i).clone(), vm)?;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            PyBaseException::slot_init(zelf, new_args, vm)
+        }
+
         #[pymethod(magic)]
         fn str(exc: PyBaseExceptionRef, vm: &VirtualMachine) -> PyStrRef {
             fn basename(filename: &str) -> &str {
@@ -1611,7 +1680,7 @@ pub(super) mod types {
                     format!("{} ({}, line {})", msg, basename(filename.as_str()), lineno)
                 }
                 (Some(lineno), None) => {
-                    format!("{} (line {})", msg, lineno)
+                    format!("{msg} (line {lineno})")
                 }
                 (None, Some(filename)) => {
                     format!("{} ({})", msg, basename(filename.as_str()))
@@ -1620,6 +1689,28 @@ pub(super) mod types {
             };
 
             vm.ctx.new_str(msg_with_location_info)
+        }
+    }
+
+    #[pyexception(
+        name = "_IncompleteInputError",
+        base = "PySyntaxError",
+        ctx = "incomplete_input_error"
+    )]
+    #[derive(Debug)]
+    pub struct PyIncompleteInputError {}
+
+    #[pyexception]
+    impl PyIncompleteInputError {
+        #[pyslot]
+        #[pymethod(name = "__init__")]
+        pub(crate) fn slot_init(
+            zelf: PyObjectRef,
+            _args: FuncArgs,
+            vm: &VirtualMachine,
+        ) -> PyResult<()> {
+            zelf.set_attr("name", vm.ctx.new_str("SyntaxError"), vm)?;
+            Ok(())
         }
     }
 
@@ -1663,7 +1754,8 @@ pub(super) mod types {
             type Args = (PyStrRef, ArgBytesLike, isize, isize, PyStrRef);
             let (encoding, object, start, end, reason): Args = args.bind(vm)?;
             zelf.set_attr("encoding", encoding, vm)?;
-            zelf.set_attr("object", object, vm)?;
+            let object_as_bytes = vm.ctx.new_bytes(object.borrow_buf().to_vec());
+            zelf.set_attr("object", object_as_bytes, vm)?;
             zelf.set_attr("start", vm.ctx.new_int(start), vm)?;
             zelf.set_attr("end", vm.ctx.new_int(end), vm)?;
             zelf.set_attr("reason", reason, vm)?;
